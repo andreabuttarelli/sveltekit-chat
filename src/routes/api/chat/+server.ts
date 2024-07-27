@@ -1,51 +1,51 @@
-import { OPENAI_KEY } from "$env/static/private";
-
-import { OpenAIChat } from "langchain/llms/openai";
-import { CallbackManager } from "langchain/callbacks";
-import { ChatPromptTemplate, HumanMessagePromptTemplate, PromptTemplate, SystemMessagePromptTemplate } from "langchain/prompts";
-import { LLMChain } from "langchain/chains";
-import { ChatOpenAI } from "langchain/chat_models/openai";
-import { HumanChatMessage, AIChatMessage, SystemChatMessage } from "langchain/schema";
 
 import { error } from '@sveltejs/kit';
 
 export type MessageBody = { chats: { role: "user" | "assistant", content: string }[] }
 
+const CHAT_ENDPOINT = 'http://127.0.0.1:8080/api/v1/chat-stream';
+
 export const POST = async ({ request }) => {
     const body: MessageBody = await request.json();
-
     if (!body) throw error(400, 'Missing Data');
 
-    // Create a new readable stream of the chat response
     const readableStream = new ReadableStream({
         async start(controller) {
-            const chat = new ChatOpenAI({
-                openAIApiKey: OPENAI_KEY,
-                modelName: "gpt-4",
-                streaming: true,
-                callbackManager: CallbackManager.fromHandlers({
-                    handleLLMNewToken: async (token: string) => controller.enqueue(token),
-                }),
-            });
+            try {
+                const response = await fetch(CHAT_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(body.chats),
+                });
 
-            await chat.call([
-                new SystemChatMessage("You are a helpful assistant. Limit prose. Answer with markdown where appropiate."),
-                new AIChatMessage("Hello! How can I help you today?"),
-                ...body.chats.map(chat => chat.role == "user"
-                    ? new HumanChatMessage(chat.content)
-                    : new AIChatMessage(chat.content)
-                )
-            ]);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
 
-            controller.close();
-        },
+                const reader = response.body!.getReader();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const decoder = new TextDecoder()
+
+                    const text = decoder.decode(value, { stream: true });
+                    controller.enqueue(text);
+                }
+            } catch (error) {
+                console.error('Error in stream:', error);
+                controller.error(error);
+            } finally {
+                controller.close();
+            }
+        }
     });
 
-    // Create and return a response of the readable stream
     return new Response(readableStream, {
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
 }
-
-
 
